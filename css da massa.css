@@ -1,0 +1,25 @@
+*{
+margin: 0;
+padding: 0;
+}
+body{
+    font-family: helvetica; 
+    background-color: #b9d9d9;
+    color: 1f2937;
+}
+header {
+    background-color: white;
+    padding: 20px;
+}
+
+main {
+    max-width: 1200px;
+    margin: 48px auto 28px;
+}
+
+
+.banner {
+    width: 500px;
+    margin: 0 auto;
+    display: block;
+}
