@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Ficha Pathfinder 2E - Edição e Comentários</title>
+
+<!-- pdf.js (para visualizar e extrair campos do PDF) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.139/pdf.min.js"></script>
+<!-- pdf-lib (para salvar PDF com campos preenchidos e comentários) -->
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.20.0/dist/pdf-lib.min.js"></script>
+
+<style>
+  body { font-family: Arial, sans-serif; margin:0; padding:16px; background:#f5f5f5; }
+  header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  h2 { margin:0; }
+  button { padding:8px 14px; background:#007bff; border:0; color:white; border-radius:6px; cursor:pointer; }
+  button:hover { background:#0056b3; }
+  #viewer { position:relative; max-width:1100px; margin:auto; }
+  .page-container { position:relative; margin:10px auto; box-shadow:0 2px 6px rgba(0,0,0,0.2); }
+  .pdf-canvas { display:block; }
+  .overlay { position:absolute; left:0; top:0; pointer-events:none; }
+  .field-input { position:absolute; pointer-events:auto; font-size:12px; border:1px solid #aaa; padding:2px 4px; background:rgba(255,255,255,0.9); }
+  .comment-btn { background:#ffca28; border:0; color:#333; padding:2px 5px; font-size:12px; border-radius:4px; cursor:pointer; margin-left:2px; }
+  .comment { position:absolute; background:#fff9a6; border:1px solid #d6c84b; padding:4px; box-shadow:0 2px 4px rgba(0,0,0,0.2); font-size:12px; }
+  .comment textarea { width:100%; border:0; background:transparent; resize:vertical; font-size:12px; }
+</style>
+</head>
+
+<body>
+<header>
+  <h2>Ficha de Personagem Pathfinder 2E</h2>
+  <button id="savePdf">Salvar PDF preenchido + comentários</button>
+</header>
+
+<div id="viewer"></div>
+
+<script>
+const PDF_PATH = 'pdfcoffee.com_pathfinder-2e-ficha-de-personagem-editavel-pdf-free.pdf';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.139/pdf.worker.min.js';
+
+let loadedPdfBuffer = null;
+let pagesInfo = [];
+
+window.addEventListener('load', () => loadPdf());
+
+async function loadPdf() {
+  const resp = await fetch(PDF_PATH);
+  const arrayBuffer = await resp.arrayBuffer();
+  loadedPdfBuffer = arrayBuffer;
+
+  const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const viewer = document.getElementById('viewer');
+
+  for (let i = 1; i <= pdfDoc.numPages; i++) {
+    const page = await pdfDoc.getPage(i);
+    const viewport = page.getViewport({ scale: 1.5 });
+
+    const container = document.createElement('div');
+    container.className = 'page-container';
+    container.style.width = viewport.width + 'px';
+    container.style.height = viewport.height + 'px';
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    canvas.className = 'pdf-canvas';
+    container.appendChild(canvas);
+
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.style.width = viewport.width + 'px';
+    overlay.style.height = viewport.height + 'px';
+    container.appendChild(overlay);
+
+    viewer.appendChild(container);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    const annotations = await page.getAnnotations({ intent: 'display' });
+    annotations.forEach(ann => {
+      if (!ann.fieldName) return;
+      const rect = pdfjsLib.Util.normalizeRect(ann.rect);
+      const [x1, y1, x2, y2] = rect;
+      const [vx1, vy1] = viewport.convertToViewportPoint(x1, y1);
+      const [vx2, vy2] = viewport.convertToViewportPoint(x2, y2);
+      const left = Math.min(vx1, vx2);
+      const top = Math.min(vy1, vy2);
+      const width = Math.abs(vx2 - vx1);
+      const height = Math.abs(vy2 - vy1);
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = ann.fieldValue || '';
+      input.className = 'field-input';
+      input.style.left = left + 'px';
+      input.style.top = top + 'px';
+      input.style.width = width + 'px';
+      input.style.height = height + 'px';
+      input.dataset.fieldName = ann.fieldName;
+      input.dataset.pageIndex = i - 1;
+
+      const cbtn = document.createElement('button');
+      cbtn.className = 'comment-btn';
+      cbtn.style.left = (left + width + 3) + 'px';
+      cbtn.style.top = top + 'px';
+      cbtn.textContent = '💬';
+      cbtn.dataset.field = ann.fieldName;
+      cbtn.dataset.pageIndex = i - 1;
+
+      overlay.appendChild(input);
+      overlay.appendChild(cbtn);
+
+      cbtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        addComment(overlay, input);
+      });
+    });
+
+    pagesInfo.push({ page, viewport, canvas, overlay });
+  }
+}
+
+function addComment(overlay, input) {
+  if (input.dataset.commentId) {
+    const existing = document.getElementById(input.dataset.commentId);
+    if (existing) { existing.querySelector('textarea').focus(); return; }
+  }
+
+  const id = 'c' + Math.random().toString(36).slice(2);
+  const comment = document.createElement('div');
+  comment.className = 'comment';
+  comment.id = id;
+  comment.style.left = (parseFloat(input.style.left) + parseFloat(input.style.width) + 10) + 'px';
+  comment.style.top = input.style.top;
+  comment.innerHTML = `
+    <textarea rows="3" placeholder="Escreva um comentário..."></textarea>
+    <button style="float:right;margin-top:2px;" onclick="this.parentElement.remove()">Fechar</button>
+  `;
+  overlay.appendChild(comment);
+  input.dataset.commentId = id;
+}
+
+document.getElementById('savePdf').addEventListener('click', savePdf);
+
+async function savePdf() {
+  if (!loadedPdfBuffer) return alert('PDF não carregado!');
+  const pdfDoc = await PDFLib.PDFDocument.load(loadedPdfBuffer);
+  const form = pdfDoc.getForm ? pdfDoc.getForm() : null;
+  const inputs = document.querySelectorAll('.field-input');
+
+  inputs.forEach(inp => {
+    const name = inp.dataset.fieldName;
+    const val = inp.value;
+    if (form) {
+      try { form.getTextField(name).setText(val); } catch {}
+    }
+  });
+
+  // Desenha comentários como notas
+  inputs.forEach(inp => {
+    const id = inp.dataset.commentId;
+    if (!id) return;
+    const el = document.getElementById(id);
+    const txt = el?.querySelector('textarea')?.value;
+    if (!txt) return;
+
+    const pageIndex = +inp.dataset.pageIndex;
+    const pageInfo = pagesInfo[pageIndex];
+    const pdfPage = pdfDoc.getPage(pageIndex);
+    const pdfW = pdfPage.getWidth(), pdfH = pdfPage.getHeight();
+    const scaleX = pdfW / pageInfo.canvas.width;
+    const scaleY = pdfH / pageInfo.canvas.height;
+
+    const rect = inp.getBoundingClientRect();
+    const canvRect = pageInfo.canvas.getBoundingClientRect();
+    const px = rect.left - canvRect.left;
+    const py = rect.top - canvRect.top;
+    const ph = rect.height;
+
+    const pdfX = px * scaleX;
+    const pdfY = (pageInfo.canvas.height - (py + ph)) * scaleY;
+
+    pdfPage.drawRectangle({
+      x: pdfX, y: pdfY, width: 180, height: 40,
+      color: PDFLib.rgb(1, 0.95, 0.6),
+      borderColor: PDFLib.rgb(0.8,0.7,0.1),
+      borderWidth: 0.5,
+    });
+    pdfPage.drawText(txt, { x: pdfX + 5, y: pdfY + 5, size: 10 });
+  });
+
+  if (form) form.flatten();
+  const bytes = await pdfDoc.save();
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'Ficha_Pathfinder_Preenchida.pdf';
+  a.click();
+}
+</script>
+</body>
+</html>
