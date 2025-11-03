@@ -2,26 +2,25 @@
 margin: 0;
 padding: 0;
 }
-body{
-    font-family: helvetica; 
-    background-color: #b9d9d9;
-    color: 1f2937;
-    text-align: center;
-}
-header {
-    background-color: white;
-    padding: 20px;
-}
 
-main {
-    max-width: 1200px;
-    margin: 48px auto 28px;
-}
+    
+    
+   body {
+ font-family: helvetica; 
+color: tomato;
+ /* 1 pixel black shadow to left, top, right and bottom */
+    text-shadow: -1px 0 black, 0 1px black, 1px 0 black, 0 -1px black;
+    background-image: url(Downloads/composicao-de-coracoes-de-ornamento-de-papel-vinoso_23-2148010194.png);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
 
-
-.banner {
-    width: 500px;
-    margin: 0 auto;
-    display: block;
 }
 
+#eita  {
+
+
+margin-left: 20%;
+border-radius: 20px;
+}
