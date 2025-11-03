@@ -6,6 +6,7 @@ body{
     font-family: helvetica; 
     background-color: #b9d9d9;
     color: 1f2937;
+    text-align: center;
 }
 header {
     background-color: white;
@@ -23,3 +24,4 @@ main {
     margin: 0 auto;
     display: block;
 }
+
