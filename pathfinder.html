@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Editor de PDF — preencher + comentários</title>
+
+<!-- pdf.js (visualização e extração de anotações) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.139/pdf.min.js"></script>
+<!-- pdf-lib (criação / modificação do PDF para salvar) -->
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.20.0/dist/pdf-lib.min.js"></script>
+
+<style>
+  body { font-family: Arial, sans-serif; margin:0; padding:16px; background:#f4f6f8; color:#111; }
+  header { display:flex; gap:12px; align-items:center; margin-bottom:12px; }
+  #viewer { position:relative; max-width:1100px; margin:auto; }
+  .page-container { position:relative; margin: 14px 0; background:#ddd; display:inline-block; box-shadow:0 2px 6px rgba(0,0,0,0.15); }
+  .pdf-canvas { display:block; }
+  .overlay { position:absolute; left:0; top:0; pointer-events:none; }
+  .field-input { position:absolute; pointer-events:auto; font-size:12px; border:1px solid rgba(0,0,0,0.25); padding:2px 4px; background:rgba(255,255,255,0.92); }
+  .comment { position:absolute; pointer-events:auto; background: #fff9a6; border:1px solid #d6c84b; padding:6px; box-shadow:0 2px 6px rgba(0,0,0,0.15); font-size:12px; max-width:240px; }
+  .comment textarea { width:100%; border:0; background:transparent; resize:vertical; font-size:12px; }
+  .controls { margin-left:auto; display:flex; gap:8px; }
+  button { padding:8px 10px; border-radius:6px; border:1px solid #bbb; background:white; cursor:pointer; }
+  .small { font-size:13px; padding:6px 8px; }
+  .field-wrap { display:flex; gap:6px; align-items:center; position:absolute; pointer-events:none; }
+  .comment-btn { pointer-events:auto; background:#2b7cff; color:white; border-radius:4px; padding:4px 6px; font-size:12px; border:0; cursor:pointer; }
+  .help { font-size:13px; color:#444; }
+</style>
+</head>
+<body>
+<header>
+  <h2>Editor de PDF — preencher campos e adicionar comentários</h2>
+  <div class="controls">
+    <label class="small">Arquivo PDF:
+      <input id="fileInput" type="file" accept="application/pdf" />
+    </label>
+    <button id="loadDefault" class="small">Usar PDF enviado</button>
+    <button id="savePdf" class="small">Salvar PDF preenchido + comentários</button>
+  </div>
+</header>
+
+<div class="help">
+  Dica: clique em qualquer campo para editar o texto. Clique no botão amarelo próximo ao campo para adicionar/editar comentário.
+</div>
+
+<div id="viewer"></div>
+
+<script>
+const DEFAULT_PDF_PATH = '/mnt/data/pdfcoffee.com_pathfinder-2e-ficha-de-personagem-editavel-pdf-free.pdf';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.139/pdf.worker.min.js';
+
+let loadedPdfBuffer = null; // ArrayBuffer do PDF atual
+let pdfDocJs = null;        // pdf.js doc
+let pagesInfo = [];         // guarda info de cada página (scale, viewport, canvas, annotations)
+const viewer = document.getElementById('viewer');
+
+document.getElementById('loadDefault').addEventListener('click', () => loadPdfFromUrl(DEFAULT_PDF_PATH));
+document.getElementById('fileInput').addEventListener('change', (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => loadPdfFromArrayBuffer(reader.result);
+  reader.readAsArrayBuffer(f);
+});
+document.getElementById('savePdf').addEventListener('click', saveFilledPdf);
+
+async function loadPdfFromUrl(url) {
+  const resp = await fetch(url);
+  const ab = await resp.arrayBuffer();
+  await loadPdfFromArrayBuffer(ab);
+}
+
+async function loadPdfFromArrayBuffer(arrayBuffer) {
+  loadedPdfBuffer = arrayBuffer;
+  // limpar viewer
+  viewer.innerHTML = '';
+  pagesInfo = [];
+
+  // carregar pdf.js
+  pdfDocJs = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const n = pdfDocJs.numPages;
+
+  for (let i = 1; i <= n; i++) {
+    const page = await pdfDocJs.getPage(i);
+    const viewport = page.getViewport({ scale: 1.5 }); // escala inicial
+    const container = document.createElement('div');
+    container.className = 'page-container';
+    container.style.width = viewport.width + 'px';
+    container.style.height = viewport.height + 'px';
+    // canvas
+    const canvas = document.createElement('canvas');
+    canvas.className = 'pdf-canvas';
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    container.appendChild(canvas);
+
+    // overlay para inputs e comentários
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.style.width = viewport.width + 'px';
+    overlay.style.height = viewport.height + 'px';
+    container.appendChild(overlay);
+
+    viewer.appendChild(container);
+
+    // renderizar
+    const ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    // extrair anotações (form fields)
+    const annotations = await page.getAnnotations({ intent: 'display' }); // inclui widgets
+    // criar inputs para cada annotation do tipo widget com fieldName
+    annotations.forEach(ann => {
+      if (!ann.fieldName) return;
+      // ann.rect é [x1,y1,x2,y2] em PDF coordenadas (origem em canto inferior esquerdo)
+      // Converter retângulo para coordenadas do canvas/viewport:
+      const rect = pdfjsLib.Util.normalizeRect(ann.rect);
+      const [x1, y1, x2, y2] = rect;
+      // converter para viewport:
+      const [vx1, vy1] = viewport.convertToViewportPoint(x1, y1);
+      const [vx2, vy2] = viewport.convertToViewportPoint(x2, y2);
+      // calcular posição e dimensões no DOM (note: y precisa ser invertido)
+      const left = Math.min(vx1, vx2);
+      const top = Math.min(vy1, vy2);
+      const width = Math.abs(vx2 - vx1);
+      const height = Math.abs(vy2 - vy1);
+
+      // Criar wrapper para input + botão comentário
+      const wrap = document.createElement('div');
+      wrap.style.left = left + 'px';
+      wrap.style.top = top + 'px';
+      wrap.style.width = width + 'px';
+      wrap.style.height = height + 'px';
+      wrap.className = 'field-wrap';
+      wrap.style.pointerEvents = 'none';
+
+      // Input HTML
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = ann.fieldValue || '';
+      input.title = ann.fieldName;
+      input.className = 'field-input';
+      input.style.width = Math.max(30, width - 34) + 'px';
+      input.style.height = Math.max(18, height - 4) + 'px';
+      input.style.left = '0';
+      input.style.top = '0';
+      input.dataset.fieldName = ann.fieldName;
+      input.dataset.pageIndex = i-1;
+      input.style.pointerEvents = 'auto';
+
+      // botão comentário
+      const cbtn = document.createElement('button');
+      cbtn.textContent = '💬';
+      cbtn.className = 'comment-btn';
+      cbtn.style.marginLeft = '4px';
+      cbtn.style.pointerEvents = 'auto';
+      cbtn.title = 'Adicionar/editar comentário';
+
+      // posiciona wrap (needs absolute inside overlay)
+      wrap.style.position = 'absolute';
+      wrap.appendChild(input);
+      wrap.appendChild(cbtn);
+
+      overlay.appendChild(wrap);
+
+      // pointer events para overlay
+      overlay.style.pointerEvents = 'auto';
+
+      // armazenar evento do botão comentário
+      cbtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        openCommentEditor(overlay, wrap, input);
+      });
+    });
+
+    // salvar info da página
+    pagesInfo.push({ page, viewport, canvas, overlay, container });
+  }
+
+  // adicionar um pequeno scroll para visualizar
+  window.scrollTo({ top: 0 });
+}
+
+// abre/insere editor de comentário para um campo (comentário flutuante)
+function openCommentEditor(overlay, wrap, input) {
+  // procurar se já existe comentário nessa posição
+  let existing = wrap.querySelector('.comment');
+  if (existing) {
+    // focar textarea
+    const ta = existing.querySelector('textarea');
+    ta.focus();
+    return;
+  }
+  const comment = document.createElement('div');
+  comment.className = 'comment';
+  comment.style.left = (wrap.offsetWidth + 6) + 'px';
+  comment.style.top = '0px';
+  comment.innerHTML = `
+    <div style="display:flex;gap:6px;align-items:center;justify-content:space-between;">
+      <strong style="font-size:12px">Comentário</strong>
+      <button style="font-size:12px;padding:2px 6px" class="del-comment">X</button>
+    </div>
+    <textarea rows="3" placeholder="Escreva um comentário..."></textarea>
+  `;
+  wrap.appendChild(comment);
+  const ta = comment.querySelector('textarea');
+  ta.value = comment.dataset.value || '';
+  ta.focus();
+
+  // salvar no elemento input (associar comentário)
+  ta.addEventListener('input', () => {
+    input.dataset.comment = ta.value;
+  });
+
+  comment.querySelector('.del-comment').addEventListener('click', () => {
+    delete input.dataset.comment;
+    comment.remove();
+  });
+}
+
+// Função de salvar/gerar novo PDF com valores e comentários "desenhados"
+async function saveFilledPdf() {
+  if (!loadedPdfBuffer) {
+    alert('Nenhum PDF carregado.');
+    return;
+  }
+
+  // Carregar com pdf-lib
+  const pdfDoc = await PDFLib.PDFDocument.load(loadedPdfBuffer);
+  const form = pdfDoc.getForm ? pdfDoc.getForm() : null;
+
+  // 1) Pegar todos inputs no viewer e aplicar aos fields do pdf-lib
+  // A estratégia:
+  // - para cada input HTML com data-field-name, tentar localizar campo de mesmo nome no pdf-lib e setar seu valor
+  // - também vamos desenhar comentários diretamente na página usando drawText (para "incorporar")
+  const inputs = document.querySelectorAll('.field-input');
+  // Mapear por nome -> valor
+  const fieldValues = [];
+  inputs.forEach(inp => {
+    const name = inp.dataset.fieldName;
+    const val = inp.value || '';
+    const pageIndex = Number(inp.dataset.pageIndex || 0);
+    const comment = inp.dataset.comment || null;
+    fieldValues.push({ name, val, pageIndex, comment, dom: inp });
+  });
+
+  // Aplicar valores via form (se existir)
+  if (form) {
+    try {
+      // Tentar setar campos textuais
+      const allFields = form.getFields();
+      // map fields by name lowercased
+      const map = {};
+      allFields.forEach(f => { try { map[f.getName()] = f } catch(e){} });
+      fieldValues.forEach(fv => {
+        if (!fv.name) return;
+        const target = map[fv.name] || map[fv.name.replace(/\s+/g,'')] || map[fv.name.toString()];
+        if (target) {
+          try {
+            // tentativa para text fields
+            if (target.setText) {
+              target.setText(fv.val);
+            } else if (target.setText && typeof target.setText === 'function') {
+              target.setText(fv.val);
+            }
+          } catch(e) { /* ignora */ }
+        }
+      });
+      // opcional: flatten form (se quiser que os valores fiquem estáticos)
+      try { form.flatten(); } catch(e) {}
+    } catch (err) {
+      console.warn('Erro aplicando form via pdf-lib:', err);
+    }
+  }
+
+  // 2) desenhar comentários sobre cada página
+  // Para isso transformamos as coordenadas do DOM / canvas para coordenadas do PDF (pontos)
+  // Precisamos do scale: pdfPage.getSize() retorna largura/altura em pontos.
+  for (const pf of fieldValues) {
+    if (!pf.comment || !pf.comment.trim()) continue;
+    const pageInfo = pagesInfo[pf.pageIndex];
+    if (!pageInfo) continue;
+    const { viewport, canvas } = pageInfo;
+    // pegar bounding box do input no overlay em pixels relativamente ao canvas
+    const inputRect = pf.dom.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    // pos dentro do canvas em pixels
+    const px = inputRect.left - canvasRect.left;
+    const py = inputRect.top - canvasRect.top;
+    const pw = inputRect.width;
+    const ph = inputRect.height;
+
+    // converter pixels->PDF pontos:
+    // viewport.width (em px) corresponde a page.view[2] - page.view[0] em PDF points * scale
+    // mas podemos recuperar page size via pdfDoc.getPage(pageIndex)
+    const pdfPage = pdfDoc.getPage(pf.pageIndex);
+    const pdfWidth = pdfPage.getWidth();
+    const pdfHeight = pdfPage.getHeight();
+
+    // relação px -> pdf points
+    const scaleX = pdfWidth / canvas.width;
+    const scaleY = pdfHeight / canvas.height;
+
+    // calcular pdf coordinates (pdf-lib usa origem no canto inferior esquerdo)
+    const pdfX = px * scaleX;
+    // converter Y: px top -> distância do topo, precisamos distância do fundo
+    const pdfY = (canvas.height - (py + ph)) * scaleY; // posiciona comentário próximo ao topo do input
+
+    // desenhar um retângulo claro (fundo de "post-it") e escrever texto
+    const drawText = pf.comment;
+    const fontSize = 10;
+    // desenhar
+    pdfPage.drawRectangle({
+      x: pdfX - 2,
+      y: pdfY - 2,
+      width: Math.min(pdfWidth - pdfX, Math.max(60, pw * scaleX + 6)),
+      height: Math.min(pdfHeight - pdfY, Math.max(18, ph * scaleY + 6)),
+      color: PDFLib.rgb(1, 0.95, 0.6),
+      borderColor: PDFLib.rgb(0.82,0.71,0.18),
+      borderWidth: 0.5,
+    });
+    pdfPage.drawText(drawText, {
+      x: pdfX + 4,
+      y: pdfY + 4,
+      size: fontSize,
+      color: PDFLib.rgb(0,0,0),
+      maxWidth: Math.min(pdfWidth - pdfX - 8, 300),
+    });
+  }
+
+  // 3) gerar bytes e fazer download
+  const newBytes = await pdfDoc.save();
+  const blob = new Blob([newBytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'preenchido_com_comentarios.pdf';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  alert('PDF gerado com sucesso. Verifique a pasta de downloads do seu navegador.');
+}
+</script>
+</body>
+</html>
